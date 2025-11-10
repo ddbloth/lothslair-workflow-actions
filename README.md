@@ -2,6 +2,15 @@
 
 A comprehensive collection of reusable GitHub Actions for Terraform automation workflows. This repository provides composable actions that enable infrastructure-as-code (IaC) teams to automate provisioning, planning, applying, and managing Terraform-based infrastructure through GitHub Actions.
 
+## Quick Links
+
+**New to this project?** Start here:
+- 📖 [QUICK_START.md](docs/QUICK_START.md) - Get deploying in 7 minutes
+- 🏗️ [WORKFLOW_IMPLEMENTATION_SUMMARY.md](WORKFLOW_IMPLEMENTATION_SUMMARY.md) - Complete overview of what's new
+- 📚 [Documentation Index](#documentation) - All guides and resources
+
+**Implementation Summary**: See [WORKFLOW_IMPLEMENTATION_SUMMARY.md](WORKFLOW_IMPLEMENTATION_SUMMARY.md) for a complete overview of the new 7-stage deployment workflow layer.
+
 ## Overview
 
 `lothslair-workflow-actions` is a modular action library designed to streamline Terraform operations in CI/CD pipelines. Each action is a self-contained, composable component that can be orchestrated to build powerful infrastructure automation workflows.
@@ -89,6 +98,19 @@ Two reusable helper scripts provide validation and error handling:
 For detailed validation and error handling patterns, see:
 - **[ERROR_HANDLING.md](docs/ERROR_HANDLING.md)** - Complete error handling guide with exit codes and patterns
 - **[INPUT_VALIDATION.md](docs/INPUT_VALIDATION.md)** - Input validation strategies and best practices
+
+### Workflow Orchestration Layer
+
+Complete guides for building production-ready Terraform deployment workflows:
+- **[WORKFLOW_LAYER_SUMMARY.md](docs/WORKFLOW_LAYER_SUMMARY.md)** - Overview of the 7-stage deployment pattern
+- **[QUICK_START.md](docs/QUICK_START.md)** - Quick reference and copy-paste template (7 min read)
+- **[DEPLOYMENT_WORKFLOW_EXAMPLE.md](docs/DEPLOYMENT_WORKFLOW_EXAMPLE.md)** - Complete 7-stage workflow guide (30 min read)
+- **[WORKFLOW_ARCHITECTURE.md](docs/WORKFLOW_ARCHITECTURE.md)** - Visual architecture, data flow, and system design
+
+### Example Workflows
+
+Production-ready workflow templates:
+- **[terraform-complete-deployment.yml](.github/workflows/terraform-complete-deployment.yml)** - Full init-to-apply workflow with approval gating and drift detection
 
 ---
 

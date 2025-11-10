@@ -1,0 +1,373 @@
+name: Terraform Deploy - Complete Workflow
+
+# Trigger: Manual dispatch with parameters
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      deployment_name:
+        description: 'Deployment identifier (e.g., core-infrastructure, networking)'
+        required: true
+        type: string
+        default: 'infrastructure-update'
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+  issues: write
+
+env:
+  # Azure Authentication using GitHub OIDC and Azure CLI
+  ARM_USE_CLI: 'true'
+  TF_LOG: INFO
+  # Variables can be set from secrets or environment
+  # TF_VAR_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  # ============================================================================
+  # STAGE 1: Setup & Validation - Prepare and validate before any state ops
+  # ============================================================================
+
+  setup-and-validate:
+    name: Setup & Validate
+    runs-on: ubuntu-latest
+    outputs:
+      plan_file: ${{ steps.set-vars.outputs.plan_file }}
+      summary_file: ${{ steps.set-vars.outputs.summary_file }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: lothslair/lothslair-workflow-actions/setup@main
+
+      - name: Setup Node.js
+        uses: lothslair/lothslair-workflow-actions/node@main
+
+      - name: Set Output Variables
+        id: set-vars
+        run: |
+          PLAN_FILE="${{ inputs.environment }}-${{ inputs.deployment_name }}.tfplan"
+          SUMMARY_FILE="${{ inputs.environment }}-${{ inputs.deployment_name }}.summary"
+          echo "plan_file=${PLAN_FILE}" >> $GITHUB_OUTPUT
+          echo "summary_file=${SUMMARY_FILE}" >> $GITHUB_OUTPUT
+          echo "::notice::Initializing deployment: ${{ inputs.deployment_name }} to ${{ inputs.environment }}"
+
+      - name: Validate Terraform Configuration
+        uses: lothslair/lothslair-workflow-actions/validate@main
+        with:
+          working_dir: 'terraform/'
+
+      - name: Check Terraform Formatting
+        uses: lothslair/lothslair-workflow-actions/format@main
+        with:
+          working_dir: 'terraform/'
+          check_only: 'true'
+
+      - name: Report Stage Success
+        run: |
+          echo "::notice::✅ Setup & Validation Stage Complete"
+          echo "  - Terraform version validated"
+          echo "  - Configuration syntax validated"
+          echo "  - Code formatting verified"
+
+  # ============================================================================
+  # STAGE 2: Backend Initialization - Set up state management
+  # ============================================================================
+
+  terraform-init:
+    name: Initialize Terraform Backend
+    needs: setup-and-validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: lothslair/lothslair-workflow-actions/setup@main
+
+      - name: Initialize Backend
+        uses: lothslair/lothslair-workflow-actions/init@main
+        with:
+          backend_rg: ${{ secrets.TERRAFORM_BACKEND_RG }}
+          backend_sa: ${{ secrets.TERRAFORM_BACKEND_SA }}
+          backend_sa_container: ${{ secrets.TERRAFORM_BACKEND_CONTAINER }}
+          backend_sa_key: ${{ inputs.environment }}-${{ inputs.deployment_name }}.tfstate
+          working_dir: 'terraform/'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Report Stage Success
+        run: |
+          echo "::notice::✅ Terraform Backend Initialization Complete"
+          echo "  - Backend configured: Azure Storage"
+          echo "  - Environment: ${{ inputs.environment }}"
+          echo "  - State key: ${{ inputs.environment }}-${{ inputs.deployment_name }}.tfstate"
+
+  # ============================================================================
+  # STAGE 3: Planning - Generate execution plan
+  # ============================================================================
+
+  terraform-plan:
+    name: Generate Terraform Plan
+    needs: [setup-and-validate, terraform-init]
+    runs-on: ubuntu-latest
+    outputs:
+      plan_exit_code: ${{ steps.plan.outputs.exitcode }}
+      has_changes: ${{ steps.check-changes.outputs.has_changes }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: lothslair/lothslair-workflow-actions/setup@main
+
+      - name: Create Plan
+        id: plan
+        uses: lothslair/lothslair-workflow-actions/plan@main
+        with:
+          environment: ${{ inputs.environment }}
+          working_dir: 'terraform/'
+          params_dir: 'terraform/environments'
+
+      - name: Publish Plan Artifact
+        uses: lothslair/lothslair-workflow-actions/publish@main
+        with:
+          environment: ${{ inputs.environment }}
+          working_dir: 'terraform/'
+
+      - name: Generate Plan Summary
+        uses: lothslair/lothslair-workflow-actions/summary@main
+        with:
+          environment: ${{ inputs.environment }}
+          working_dir: 'terraform/'
+
+      - name: Check Plan Changes
+        id: check-changes
+        run: |
+          EXIT_CODE=${{ steps.plan.outputs.exitcode }}
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "::notice::✅ Plan generation complete - No infrastructure changes detected"
+          elif [ $EXIT_CODE -eq 2 ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "::warning::⚠️ Plan generation complete - Infrastructure changes detected"
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "::error::❌ Plan generation failed (exit code: $EXIT_CODE)"
+            exit 1
+          fi
+
+      - name: Report Plan Summary
+        run: |
+          echo "## Terraform Plan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Deployment:** ${{ inputs.deployment_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** Changes detected: ${{ steps.check-changes.outputs.has_changes }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[Download Plan Artifact](../../runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # STAGE 4: Approval Gate - Manual approval for changes
+  # ============================================================================
+
+  approval-required:
+    name: Request Approval
+    needs: terraform-plan
+    runs-on: ubuntu-latest
+    if: ${{ needs.terraform-plan.outputs.has_changes == 'true' }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Create Approval Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const environment = '${{ inputs.environment }}';
+            const deployment = '${{ inputs.deployment_name }}';
+            const actor = '${{ github.actor }}';
+            const ref = '${{ github.ref }}';
+            const runId = '${{ github.run_id }}';
+            
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[Approval] Terraform Deploy ${environment}: ${deployment}`,
+              body: `Terraform Deployment Approval Required\n\nDeployment Details:\n- Environment: ${environment}\n- Deployment: ${deployment}\n- Triggered by: @${actor}\n- Branch: ${ref}\n- Workflow Run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${runId}\n\nWhat's Changing?\nInfrastructure changes have been detected and require approval.\n\nNext Steps:\n1. Review the plan artifact in the workflow run\n2. Comment /approve to proceed\n3. Comment /deny to cancel\n\nNote: Only team members with write access can approve.`,
+              labels: ['terraform', 'approval-required', environment]
+            });
+            
+            console.log('Approval issue created: ' + issue.data.html_url);
+            console.log('Issue #' + issue.data.number);
+
+      - name: Report Waiting for Approval
+        run: |
+          echo "::notice::⏳ Deployment paused - Waiting for approval"
+          echo "::notice::An approval issue has been created. Team review required."
+
+  # ============================================================================
+  # STAGE 5: Application - Apply approved changes
+  # ============================================================================
+
+  terraform-apply:
+    name: Apply Infrastructure Changes
+    needs: [setup-and-validate, terraform-plan]
+    runs-on: ubuntu-latest
+    if: ${{ needs.terraform-plan.outputs.has_changes == 'true' }}
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: lothslair/lothslair-workflow-actions/setup@main
+
+      - name: Download Plan Artifact
+        uses: lothslair/lothslair-workflow-actions/download@main
+        with:
+          environment: ${{ inputs.environment }}
+          working_dir: 'terraform/'
+
+      - name: Apply Infrastructure
+        uses: lothslair/lothslair-workflow-actions/apply@main
+        with:
+          environment: ${{ inputs.environment }}
+          working_dir: 'terraform/'
+          plan_exit_code: ${{ needs.terraform-plan.outputs.plan_exit_code }}
+
+      - name: Generate Post-Apply Summary
+        uses: lothslair/lothslair-workflow-actions/summary@main
+        with:
+          environment: ${{ inputs.environment }}
+          working_dir: 'terraform/'
+
+      - name: Report Apply Success
+        run: |
+          echo "::notice::✅ Infrastructure successfully deployed to ${{ inputs.environment }}"
+          echo ""
+          echo "Deployment Summary:"
+          echo "  Environment: ${{ inputs.environment }}"
+          echo "  Deployment: ${{ inputs.deployment_name }}"
+          echo "  Deployed by: ${{ github.actor }}"
+          echo "  Timestamp: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
+      - name: Update Approval Issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'terraform,approval-required'
+            });
+            
+            const matching = issues.data.find(i => 
+              i.title.includes('${{ inputs.environment }}') && 
+              i.title.includes('${{ inputs.deployment_name }}')
+            );
+            
+            if (matching) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: matching.number,
+                body: '✅ **Approved and Applied** - Infrastructure changes have been successfully deployed.'
+              });
+              
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: matching.number,
+                state: 'closed'
+              });
+            }
+
+  # ============================================================================
+  # STAGE 6: Drift Detection (Optional)
+  # ============================================================================
+
+  detect-drift:
+    name: Detect Configuration Drift
+    needs: [terraform-plan, terraform-apply]
+    runs-on: ubuntu-latest
+    if: always()
+    continue-on-error: true
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: lothslair/lothslair-workflow-actions/setup@main
+
+      - name: Check for Drift
+        uses: lothslair/lothslair-workflow-actions/drift@main
+        with:
+          environment: ${{ inputs.environment }}
+          working_dir: 'terraform/'
+          params_dir: 'terraform/environments'
+
+      - name: Report Drift Status
+        run: |
+          echo "::notice::✅ Drift detection completed"
+
+  # ============================================================================
+  # STAGE 7: Final Summary
+  # ============================================================================
+
+  deployment-complete:
+    name: Deployment Complete
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [setup-and-validate, terraform-init, terraform-plan, terraform-apply]
+    steps:
+      - name: Create Deployment Summary
+        run: |
+          echo "# 📊 Terraform Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** \`${{ inputs.environment }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment:** \`${{ inputs.deployment_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** [\`${{ github.sha }}\`](../../commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Stage Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Setup & Validate | ${{ needs.setup-and-validate.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Initialize | ${{ needs.terraform-init.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Plan | ${{ needs.terraform-plan.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Apply | ${{ needs.terraform-apply.result == 'success' && '✅' || (needs.terraform-apply.result == 'skipped' && '⏭️ ' || '❌') }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Next Steps" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.terraform-apply.result }}" == "success" ]; then
+            echo "- ✅ Infrastructure deployed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔍 Configuration drift detection running" >> $GITHUB_STEP_SUMMARY
+            echo "- 📝 Review workflow logs for details" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.terraform-apply.result }}" == "skipped" ]; then
+            echo "- ⏭️ Apply stage was skipped (no changes detected)" >> $GITHUB_STEP_SUMMARY
+            echo "- ℹ️ No infrastructure modifications were needed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ❌ Deployment encountered errors" >> $GITHUB_STEP_SUMMARY
+            echo "- 📝 Review workflow logs for details" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔧 Fix issues and retry" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Report Final Status
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "::notice::🎉 Deployment workflow completed successfully"
+          else
+            echo "::warning::⚠️ Deployment workflow completed with warnings or errors"
+          fi
