@@ -1,0 +1,36 @@
+name: Terraform Validate
+description: Validate Terraform configuration syntax and consistency
+inputs:
+  working_dir:
+    required: true
+    type: string
+    description: 'Working directory for Terraform operations'
+runs:
+  using: "composite"
+  steps:
+    - name: Validate Inputs
+      shell: bash
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        source "${{ github.action_path }}/../scripts/validate-inputs.sh"
+        
+        validate_required "working_dir" "${{ inputs.working_dir }}"
+        validate_directory "working_dir" "${{ inputs.working_dir }}"
+        validate_terraform_dir "${{ inputs.working_dir }}"
+    
+    - name: Terraform Validate
+      shell: bash
+      id: validate
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        TF_INPUT: "false"
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        
+        log_group "Terraform Validation"
+        log_notice "Validating Terraform configuration..."
+        
+        terraform validate || fail "Terraform validation failed" 20
+        
+        log_notice "✓ Terraform configuration is valid"
+        log_group_end

@@ -1,0 +1,91 @@
+name: Terraform Init
+description: Initialize Terraform with Azure Storage backend
+inputs:
+  backend_rg:
+    required: true
+    type: string
+    description: 'Azure Resource Group containing the state storage account'
+  backend_sa:
+    required: true
+    type: string
+    description: 'Azure Storage Account name for Terraform state'
+  backend_sa_container:
+    required: true
+    type: string
+    description: 'Container name in the storage account'
+  backend_sa_key:
+    required: true
+    type: string
+    description: 'Key/blob name for the state file'
+  working_dir:
+    required: true
+    type: string
+    description: 'Working directory for Terraform operations'
+  github_token:
+    required: false
+    type: string
+    description: 'GitHub token for git authentication (optional if using SSH)'
+runs:
+  using: "composite"
+  steps:
+    - name: Validate Inputs
+      shell: bash
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        source "${{ github.action_path }}/../scripts/validate-inputs.sh"
+        
+        log_group "Input Validation"
+        validate_init_inputs \
+          "${{ inputs.backend_rg }}" \
+          "${{ inputs.backend_sa }}" \
+          "${{ inputs.backend_sa_container }}" \
+          "${{ inputs.backend_sa_key }}" \
+          "${{ inputs.working_dir }}"
+        log_group_end
+    
+    - name: Configure Git Credentials
+      shell: bash
+      if: inputs.github_token != ''
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        log_group "Git Configuration"
+        
+        # Use GitHub CLI to configure git credentials securely
+        echo "$GITHUB_TOKEN" | gh auth login --with-token || \
+          handle_auth_error "GitHub" "gh auth login"
+        
+        log_notice "✓ Git authentication configured"
+        log_group_end
+    
+    - name: Terraform Init
+      shell: bash
+      id: init
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        TF_INPUT: "false"
+        TF_IN_AUTOMATION: "true"
+        ARM_USE_CLI: "true"
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        set -e
+        
+        log_group "Terraform Initialization"
+        log_notice "Backend RG: ${{ inputs.backend_rg }}"
+        log_notice "Backend SA: ${{ inputs.backend_sa }}"
+        log_notice "Container: ${{ inputs.backend_sa_container }}"
+        
+        terraform init \
+          -input=false \
+          -reconfigure \
+          -backend-config="resource_group_name=${{ inputs.backend_rg }}" \
+          -backend-config="storage_account_name=${{ inputs.backend_sa }}" \
+          -backend-config="container_name=${{ inputs.backend_sa_container }}" \
+          -backend-config="key=${{ inputs.backend_sa_key }}" || \
+          fail "Terraform initialization failed" 20
+        
+        log_notice "✓ Terraform initialized successfully"
+        log_group_end
+
+

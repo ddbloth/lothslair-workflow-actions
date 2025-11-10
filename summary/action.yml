@@ -1,0 +1,65 @@
+name: Create Terraform Plan Summary
+description: Generate formatted Terraform plan summaries for reporting
+inputs:
+  environment:
+    required: true
+    type: string
+    description: 'Environment name (e.g., dev, staging, prod)'
+  working_dir:
+    required: true
+    type: string
+    description: 'Working directory for Terraform operations'
+outputs: 
+  summary:
+    description: 'Formatted Terraform plan output for PR comments and summaries'
+    value: ${{ steps.tf-plan-string.outputs.summary }}
+runs:
+  using: "composite"
+  steps:
+    - name: Validate Inputs
+      shell: bash
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        source "${{ github.action_path }}/../scripts/validate-inputs.sh"
+        
+        validate_required "environment" "${{ inputs.environment }}"
+        validate_required "working_dir" "${{ inputs.working_dir }}"
+    
+    - name: Create String Output
+      id: tf-plan-string
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        
+        if [ ! -f "$ENVIRONMENT.plan.tfplan" ]; then
+          fail "Plan file not found: $ENVIRONMENT.plan.tfplan" 60
+        fi
+        
+        TERRAFORM_PLAN=$(terraform show -no-color "$ENVIRONMENT.plan.tfplan")
+        delimiter="$(openssl rand -hex 8)"
+        echo "summary<<${delimiter}" >> $GITHUB_OUTPUT
+        echo "## 📋 Terraform Plan Output - $ENVIRONMENT" >> $GITHUB_OUTPUT
+        echo "<details open><summary>Plan Summary</summary>" >> $GITHUB_OUTPUT
+        echo "" >> $GITHUB_OUTPUT
+        echo '```terraform' >> $GITHUB_OUTPUT
+        echo "$TERRAFORM_PLAN" >> $GITHUB_OUTPUT
+        echo '```' >> $GITHUB_OUTPUT
+        echo "</details>" >> $GITHUB_OUTPUT
+        echo "${delimiter}" >> $GITHUB_OUTPUT
+        
+        log_notice "✓ Summary generated successfully"
+        
+    - name: Publish Terraform Plan to Task Summary
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        SUMMARY: ${{ steps.tf-plan-string.outputs.summary }}
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        
+        echo "$SUMMARY" >> $GITHUB_STEP_SUMMARY
+        log_notice "✓ Summary published to task summary"
+        

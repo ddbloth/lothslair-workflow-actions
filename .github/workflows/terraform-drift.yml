@@ -1,0 +1,106 @@
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      runner:
+        required: false
+        type: string
+      deployment_name:
+        required: true
+        type: string
+      tf_actions_working_dir:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+  issues: write
+  packages: read
+
+env: 
+  ARM_CLIENT_ID: ${{ secrets.AZURE_AD_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_AD_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+  ARM_USE_AZUREAD: true
+  REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+  SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+  NODE_TLS_REJECT_UNAUTHORIZED: 0
+  GIT_SSL_NO_VERIFY: true
+  NODE_EXTRA_CA_CERTS: '/etc/ssl/certs/ca-certificates.crt'
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    environment: ${{ inputs.environment }}
+    runs-on: 
+       group: ${{ inputs.runner }}
+    env:
+      #this is needed since we are running terraform with read-only permissions
+      ARM_SKIP_PROVIDER_REGISTRATION: true 
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/${{ inputs.tf_actions_working_dir }}
+    steps:
+      - name: "Print configuration vars to output"
+        id: print-vars
+        run: |
+            echo "params_dir=${{ vars.PARAMS_DIR }}" >> $GITHUB_OUTPUT
+            echo "approvers=${{ vars.APPROVERS }}" >> $GITHUB_OUTPUT
+            echo "minimum_approvals=${{ vars.MINIMUM_APPROVALS }}" >> $GITHUB_OUTPUT
+            echo "deny_self_approval=${{ vars.DENY_SELF_APPROVER }}" >> $GITHUB_OUTPUT
+            echo "backend_rg=${{ vars.BACKEND_RG }}" >> $GITHUB_OUTPUT
+            echo "backend_sa=${{ vars.BACKEND_SA }}" >> $GITHUB_OUTPUT
+            echo "backend_container=${{ vars.BACKEND_SA_CONTAINER }}" >> $GITHUB_OUTPUT
+            echo "backend_key=${{ vars.PROJECT }}-${{ inputs.deployment_name }}.tfstate" >> $GITHUB_OUTPUT
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hp-infrastructure/dlz-github-workflow/setup@v1.0.0
+
+      - name: Set Node.js 20.x for GitHub Action
+        uses: hp-infrastructure/dlz-github-workflow/node@v1.0.0
+
+      - name: Terraform Init
+        uses: hp-infrastructure/dlz-github-workflow/init@v1.0.0
+        with:
+          backend_rg: ${{ steps.print-vars.outputs.backend_rg }}
+          backend_sa: ${{ steps.print-vars.outputs.backend_sa }}
+          backend_sa_container: ${{ steps.print-vars.outputs.backend_container }}
+          backend_sa_key: ${{ steps.print-vars.outputs.backend_key }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+          github_token: ${{ secrets.DLZ_GITHUB_TOKEN }}
+
+      - name: Terraform Plan
+        id: tf-plan
+        uses: hp-infrastructure/dlz-github-workflow/plan@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+          params_dir: ${{  steps.print-vars.outputs.params_dir }}
+
+      - name: Publish Terraform Plan
+        uses: hp-infrastructure/dlz-github-workflow/publish@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+
+      - name: Create String Output
+        id: tf-plan-string
+        uses: hp-infrastructure/dlz-github-workflow/summary@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+
+      - name:  Publish Drift Report
+        uses: hp-infrastructure/dlz-github-workflow/drift@v1.0.0
+        with:
+          github_token: ${{ secrets.DLZ_GITHUB_TOKEN }}
+          planExitCode: ${{ steps.tf-plan.outputs.exitcode }} 
+          outputSummary: ${{ steps.tf-plan-string.outputs.summary }} 

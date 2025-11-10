@@ -1,0 +1,47 @@
+name: Terraform Apply Plan
+description: Apply a previously generated Terraform plan to infrastructure
+inputs:
+  environment:
+    required: true
+    type: string
+    description: 'Environment name (e.g., dev, staging, prod)'
+  working_dir:
+    required: true
+    type: string
+    description: 'Working directory for Terraform operations'
+runs:
+  using: "composite"
+  steps:
+    - name: Validate Inputs
+      shell: bash
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        source "${{ github.action_path }}/../scripts/validate-inputs.sh"
+        
+        validate_required "environment" "${{ inputs.environment }}"
+        validate_required "working_dir" "${{ inputs.working_dir }}"
+    
+    - name: Terraform Apply
+      working-directory: ${{ inputs.working_dir }}
+      shell: bash
+      env:
+        TF_INPUT: "false"
+        TF_IN_AUTOMATION: "true"
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        
+        log_group "Terraform Apply"
+        log_notice "Environment: ${{ inputs.environment }}"
+        
+        # Validate plan file exists
+        if [ ! -f "${{ inputs.environment }}.plan.tfplan" ]; then
+          fail "Plan file not found: ${{ inputs.environment }}.plan.tfplan" 60
+        fi
+        
+        log_notice "✓ Plan file validated"
+        
+        terraform apply -auto-approve "${{ inputs.environment }}.plan.tfplan" || \
+          fail "Terraform apply failed" 20
+        
+        log_notice "✓ Terraform apply completed successfully"
+        log_group_end

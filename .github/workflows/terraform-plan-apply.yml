@@ -1,0 +1,186 @@
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      runner:
+        required: false
+        type: string
+      lifecycle:
+        required: false
+        type: string
+      deployment_name:
+        required: true
+        type: string
+      tf_actions_working_dir:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+  issues: write
+  packages: read
+
+env: 
+  ARM_CLIENT_ID: ${{ secrets.AZURE_AD_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_AD_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+  ARM_USE_AZUREAD: true
+  REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+  SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+  NODE_TLS_REJECT_UNAUTHORIZED: 0
+  GIT_SSL_NO_VERIFY: true
+  NODE_EXTRA_CA_CERTS: '/etc/ssl/certs/ca-certificates.crt'
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    if: ${{ github.ref == 'refs/heads/main' || inputs.environment == 'dev' || inputs.lifecycle == 'dev' }}
+    environment: ${{ inputs.environment }}
+    runs-on: 
+       group: ${{ inputs.runner }}
+    env:
+      #this is needed since we are running terraform with read-only permissions
+      ARM_SKIP_PROVIDER_REGISTRATION: true
+    outputs:
+      tfplanExitCode: ${{ steps.tf-plan.outputs.exitcode }} 
+      tfplanSummary: ${{ steps.tf-plan-string.outputs.summary }} 
+      params_dir: ${{ steps.print-vars.outputs.params_dir }} 
+      approvers: ${{ steps.print-vars.outputs.approvers }} 
+      minimum_approvals: ${{ steps.print-vars.outputs.minimum_approvals }} 
+      deny_self_approval: ${{ steps.print-vars.outputs.deny_self_approval }} 
+      backend_rg: ${{ steps.print-vars.outputs.backend_rg }} 
+      backend_sa: ${{ steps.print-vars.outputs.backend_sa }}  
+      backend_container: ${{ steps.print-vars.outputs.backend_container }}  
+      backend_key: ${{ steps.print-vars.outputs.backend_key }}  
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/${{ inputs.tf_actions_working_dir }}
+    steps:  
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hp-infrastructure/dlz-github-workflow/setup@v1.0.0
+
+      - name: Set Node.js 20.x for GitHub Action
+        uses: hp-infrastructure/dlz-github-workflow/node@v1.0.0
+
+      - name: "Print configuration vars to output"
+        id: print-vars
+        run: |
+            echo "params_dir=${{ vars.PARAMS_DIR }}" >> $GITHUB_OUTPUT
+            echo "approvers=${{ vars.APPROVERS }}" >> $GITHUB_OUTPUT
+            echo "minimum_approvals=${{ vars.MINIMUM_APPROVALS }}" >> $GITHUB_OUTPUT
+            echo "deny_self_approval=${{ vars.DENY_SELF_APPROVER }}" >> $GITHUB_OUTPUT
+            echo "backend_rg=${{ vars.BACKEND_RG }}" >> $GITHUB_OUTPUT
+            echo "backend_sa=${{ vars.BACKEND_SA }}" >> $GITHUB_OUTPUT
+            echo "backend_container=${{ vars.BACKEND_SA_CONTAINER }}" >> $GITHUB_OUTPUT
+            echo "backend_key=${{ vars.PROJECT }}-${{ inputs.deployment_name }}.tfstate" >> $GITHUB_OUTPUT
+
+      - name: Terraform Init
+        uses: hp-infrastructure/dlz-github-workflow/init@v1.0.0
+        with:
+          backend_rg: ${{ steps.print-vars.outputs.backend_rg }}
+          backend_sa: ${{ steps.print-vars.outputs.backend_sa }}
+          backend_sa_container: ${{ steps.print-vars.outputs.backend_container }}
+          backend_sa_key: ${{ steps.print-vars.outputs.backend_key }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+          github_token: ${{ secrets.DLZ_GITHUB_TOKEN }}
+
+      - name: Terraform Validate
+        uses: hp-infrastructure/dlz-github-workflow/validate@v1.0.0
+        with:
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+
+      - name: Terraform Format
+        uses: hp-infrastructure/dlz-github-workflow/format@v1.0.0
+        with:
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+
+      - name: Terraform Plan
+        id: tf-plan
+        uses: hp-infrastructure/dlz-github-workflow/plan@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+          params_dir: ${{ steps.print-vars.outputs.params_dir }}
+
+      - name: Publish Terraform Plan
+        uses: hp-infrastructure/dlz-github-workflow/publish@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+
+      - name: Create String Output
+        id: tf-plan-string
+        uses: hp-infrastructure/dlz-github-workflow/summary@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }} 
+
+  manual-approval:
+    name: manual approval
+    runs-on: 
+       group: ${{ inputs.runner }}
+    needs: terraform-plan
+    if: ${{ needs.terraform-plan.outputs.tfplanExitCode == 2 }} 
+    steps: 
+      # Generate a github issue for approval purposes
+      - name: Require Approval to apply
+        uses: hp-infrastructure/gh-action-manual-approval@main
+        with:
+          secret: ${{ github.TOKEN }}
+          approvers: '${{  needs.terraform-plan.outputs.approvers  }}'
+          minimum-approvals: ${{ needs.terraform-plan.outputs.minimum_approvals }}
+          issue-title: 'Terraform apply of ${{ github.repository }} to env ${{ inputs.environment }}'
+          issue-body: |
+            Please approve or deny the deployment of ${{ github.repository }}@${{ inputs.environment }}
+          exclude-workflow-initiator-as-approver: ${{ needs.terraform-plan.outputs.deny_self_approval }}
+        #continue-on-error: true
+
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: 
+       group: ${{ inputs.runner }}
+    needs: [terraform-plan, manual-approval]
+    if: ${{ needs.terraform-plan.outputs.tfplanExitCode == 2 }} 
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.tf_actions_working_dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hp-infrastructure/dlz-github-workflow/setup@v1.0.0
+
+      - name: Set Node.js 20.x for GitHub Action
+        uses: hp-infrastructure/dlz-github-workflow/node@v1.0.0
+
+      - name: Terraform Init
+        uses: hp-infrastructure/dlz-github-workflow/init@v1.0.0
+        with:
+          backend_rg: ${{ needs.terraform-plan.outputs.backend_rg }}
+          backend_sa: ${{ needs.terraform-plan.outputs.backend_sa }}
+          backend_sa_container: ${{ needs.terraform-plan.outputs.backend_container }}
+          backend_sa_key: ${{needs.terraform-plan.outputs.backend_key }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+          github_token: ${{ secrets.DLZ_GITHUB_TOKEN }}
+
+      - name: Download Terraform Plan
+        uses: hp-infrastructure/dlz-github-workflow/download@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+
+      - name: Terraform Apply
+        uses: hp-infrastructure/dlz-github-workflow/apply@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}    

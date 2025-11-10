@@ -1,0 +1,22 @@
+name: Publish Terraform Plan
+description: Upload Terraform plan artifacts to GitHub Actions
+inputs:
+  environment:
+    required: true
+    type: string
+    description: 'Environment name (e.g., dev, staging, prod)'
+  working_dir:
+    required: true
+    type: string
+    description: 'Working directory for Terraform operations'
+runs:
+  using: "composite"
+  steps:
+    - name: Publish Terraform Plan
+      uses: actions/upload-artifact@v4
+      with:
+        name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+        path: ${{ inputs.working_dir }}/${{ inputs.environment }}.plan.tfplan
+        if-no-files-found: error
+        retention-days: 7
+

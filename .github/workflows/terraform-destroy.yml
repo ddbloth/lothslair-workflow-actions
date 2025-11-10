@@ -1,0 +1,165 @@
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+        default: ''
+      approvers:
+         required: false
+         type: string 
+         default: ''
+      minimum_approvals:
+         required: false
+         type: string 
+      deny_self_approver:
+         required: false
+         type: boolean
+         default: false
+      runner:
+        required: false
+        type: string
+      backend_rg:
+        required: true
+        type: string
+      backend_sa:
+        required: true
+        type: string
+      backend_sa_container:
+        required: true
+        type: string
+      backend_sa_key:
+        required: true
+        type: string
+      tf_actions_working_dir:
+        required: true
+        type: string
+      paramsDir:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+  issues: write
+  packages: read
+env: 
+  ARM_CLIENT_ID: ${{ secrets.AZURE_AD_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_AD_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+  ARM_USE_AZUREAD: true
+  REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+  SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+  NODE_TLS_REJECT_UNAUTHORIZED: 0
+  GIT_SSL_NO_VERIFY: true
+  NODE_EXTRA_CA_CERTS: '/etc/ssl/certs/ca-certificates.crt'
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    if: ${{ github.ref == 'refs/heads/main' || inputs.environment == 'dev' }}
+    environment: ${{ inputs.environment }}
+    runs-on: 
+       group: ${{ inputs.runner }}
+    env:
+      #this is needed since we are running terraform with read-only permissions
+      ARM_SKIP_PROVIDER_REGISTRATION: true
+    outputs:
+      tfplanExitCode: ${{ steps.tf-plan-destroy.outputs.exitcode}} 
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/${{ inputs.tf_actions_working_dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hp-infrastructure/dlz-github-workflow/setup@v1.0.0
+
+      - name: Set Node.js 20.x for GitHub Action
+        uses: hp-infrastructure/dlz-github-workflow/node@v1.0.0
+
+      - name: Terraform Init
+        uses: hp-infrastructure/dlz-github-workflow/init@v1.0.0
+        with:
+          backend_rg: ${{ inputs.backend_rg }}
+          backend_sa: ${{ inputs.backend_sa }}
+          backend_sa_container: ${{ inputs.backend_sa_container }}
+          backend_sa_key: ${{ inputs.backend_sa_key }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+          github_token: ${{ secrets.DLZ_GITHUB_TOKEN }}
+
+      - name: Terraform Plan Destroy
+        id: tf-plan-destroy
+        uses: hp-infrastructure/dlz-github-workflow/plan-destroy@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+          paramsDir: ${{ inputs.paramsDir }}
+        #continue-on-error: true
+
+      - name: Publish Terraform Plan
+        uses: hp-infrastructure/dlz-github-workflow/publish@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+        #continue-on-error: true
+
+      - name: Create String Output
+        uses: hp-infrastructure/dlz-github-workflow/summary@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+        #continue-on-error: true   
+
+      - name: manual approval
+        if: ${{ ! inputs.plan_only && needs.terraform-plan.outputs.tfplanExitCode == 2 }} 
+        uses: hp-infrastructure/gh-action-manual-approval@main
+        with:
+          secret: ${{ github.TOKEN }}
+          approvers: '${{ inputs.approvers }}'
+          minimum-approvals: ${{ inputs.minimum_approvals }}
+          issue-title: 'Terraform apply of ${{ github.repository }} to env ${{ inputs.environment }}'
+          issue-body: |
+            Please approve or deny the deployment of ${{ github.repository }}@${{ inputs.environment }}
+          exclude-workflow-initiator-as-approver: ${{ inputs.deny_self_approver }}
+        #continue-on-error: true
+
+  terraform-apply:
+    name: Terraform Destroy
+    runs-on: 
+       group: ${{ inputs.runner }}
+    needs: terraform-plan
+    if: ${{ needs.terraform-plan.outputs.tfplanExitCode == 2 }} 
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.tf_actions_working_dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hp-infrastructure/dlz-github-workflow/setup@v1.0.0
+
+      - name: Set Node.js 20.x for GitHub Action
+        uses: hp-infrastructure/dlz-github-workflow/node@v1.0.0
+
+      - name: Terraform Init
+        uses: hp-infrastructure/dlz-github-workflow/init@v1.0.0
+        with:
+          backend_rg: ${{ inputs.backend_rg }}
+          backend_sa: ${{ inputs.backend_sa }}
+          backend_sa_container: ${{ inputs.backend_sa_container }}
+          backend_sa_key: ${{ inputs.backend_sa_key }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+          github_token: ${{ secrets.DLZ_GITHUB_TOKEN }}
+
+      - name: Terraform Destroy
+        uses: hp-infrastructure/dlz-github-workflow/destroy@v1.0.0
+        with:
+          environment: ${{ inputs.environment }}
+          tf_actions_working_dir: ${{ inputs.tf_actions_working_dir }}
+          paramsDir: ${{ inputs.paramsDir }}       

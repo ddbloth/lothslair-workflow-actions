@@ -1,0 +1,9 @@
+name: Terraform setup
+description: Setup Terraform
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_wrapper: false

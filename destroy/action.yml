@@ -1,0 +1,49 @@
+name: Terraform Destroy
+description: Destroy infrastructure managed by Terraform
+inputs:
+  environment:
+    required: true
+    type: string
+    description: 'Environment name (e.g., dev, staging, prod)'
+  working_dir:
+    required: true
+    type: string
+    description: 'Working directory for Terraform operations'
+  params_dir:
+    required: true
+    type: string
+    description: 'Directory containing variable files'
+runs:
+  using: "composite"
+  steps:
+    - name: Validate Inputs
+      shell: bash
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        source "${{ github.action_path }}/../scripts/validate-inputs.sh"
+        
+        validate_plan_inputs \
+          "${{ inputs.environment }}" \
+          "${{ inputs.working_dir }}" \
+          "${{ inputs.params_dir }}" \
+          "${{ github.workspace }}"
+    
+    - name: Terraform Destroy
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        TF_INPUT: "false"
+        TF_IN_AUTOMATION: "true"
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        
+        log_group "Terraform Destroy"
+        warn_destructive "destroy" "infrastructure in ${{ inputs.environment }}"
+        
+        terraform apply -destroy \
+          -input=false \
+          -var-file="${{ github.workspace }}/${{ inputs.params_dir }}/${{ inputs.environment }}-variables.tfvars" || \
+          fail "Terraform destroy failed" 20
+        
+        log_notice "✓ Terraform destroy completed"
+        log_group_end 

@@ -1,0 +1,39 @@
+name: Push Terraform Output to PR
+description: Post Terraform plan output as a comment on pull requests
+inputs:
+  github_token:
+    required: true
+    type: string
+    description: 'GitHub token for API access'
+  summary:
+    required: true
+    type: string
+    description: 'Terraform plan summary/output to post'
+runs:
+  using: "composite"
+  steps:
+    - name: Validate Inputs
+      shell: bash
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        source "${{ github.action_path }}/../scripts/validate-inputs.sh"
+        
+        validate_required "github_token" "${{ inputs.github_token }}"
+        validate_summary "${{ inputs.summary }}"
+    
+    - name: Push Terraform Output to PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      env:
+        SUMMARY: ${{ inputs.summary }}
+      with:
+          github-token: ${{ inputs.github_token }}
+          script: |
+            const body = `${process.env.SUMMARY}`;
+            github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+            })
+            console.log('Successfully posted Terraform plan to PR #' + context.issue.number)

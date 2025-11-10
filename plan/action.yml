@@ -1,0 +1,60 @@
+name: Terraform Plan
+description: Execute Terraform plan and detect infrastructure changes
+inputs:
+  environment:
+    required: true
+    type: string
+    description: 'Environment name (e.g., dev, staging, prod)'
+  working_dir:
+    required: true
+    type: string
+    description: 'Working directory for Terraform operations'
+  params_dir:
+    required: true
+    type: string
+    description: 'Directory containing variable files'
+description: Terraform Plan
+outputs: 
+  exitcode:
+    description: 'Terraform plan exit code (0=no changes, 1=error, 2=changes detected)'
+    value: ${{ steps.tf-plan.outputs.exitcode }} 
+runs:
+  using: "composite"
+  steps:
+    - name: Validate Inputs
+      shell: bash
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        source "${{ github.action_path }}/../scripts/validate-inputs.sh"
+        
+        validate_plan_inputs \
+          "${{ inputs.environment }}" \
+          "${{ inputs.working_dir }}" \
+          "${{ inputs.params_dir }}" \
+          "${{ github.workspace }}"
+    
+    - name: Terraform Plan
+      shell: bash
+      id: tf-plan
+      working-directory: ${{ inputs.working_dir }}
+      env:
+        TF_INPUT: "false"
+        TF_IN_AUTOMATION: "true"
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        
+        log_group "Terraform Plan Execution"
+        log_notice "Environment: ${{ inputs.environment }}"
+        log_notice "Working directory: $(pwd)"
+        
+        local_exitcode=0
+        terraform plan \
+          -input=false \
+          -detailed-exitcode \
+          -var-file="${{ github.workspace }}/${{ inputs.params_dir }}/${{ inputs.environment }}-variables.tfvars" \
+          -out "${{ inputs.environment }}.plan.tfplan" || local_exitcode=$?
+        
+        log_group_end
+        
+        echo "exitcode=$local_exitcode" >> $GITHUB_OUTPUT
+        handle_terraform_error "plan" "$local_exitcode"

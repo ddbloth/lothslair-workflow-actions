@@ -1,0 +1,20 @@
+name: Download Terraform Plan
+description: Download Terraform plan artifacts from GitHub Actions
+inputs:
+  environment:
+    required: true
+    type: string
+    description: 'Environment name (e.g., dev, staging, prod)'
+  working_dir:
+    required: true
+    type: string
+    description: 'Working directory for Terraform operations'
+runs:
+  using: "composite"
+  steps:
+    - name: Download Terraform Plan
+      uses: actions/download-artifact@v4
+      with:
+        name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+        path: ${{ inputs.working_dir }}
+

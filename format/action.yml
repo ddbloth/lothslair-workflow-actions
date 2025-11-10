@@ -1,0 +1,45 @@
+name: Terraform Format
+description: Validate and format Terraform code
+inputs:
+  working_dir:
+    required: true
+    type: string
+    description: 'Working directory for Terraform operations'
+  check_only:
+    required: false
+    type: boolean
+    description: 'Only check formatting without applying changes (default: false)'
+    default: 'false'
+runs:
+  using: "composite"
+  steps:
+    - name: Validate Inputs
+      shell: bash
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        source "${{ github.action_path }}/../scripts/validate-inputs.sh"
+        
+        validate_required "working_dir" "${{ inputs.working_dir }}"
+        validate_directory "working_dir" "${{ inputs.working_dir }}"
+        validate_terraform_dir "${{ inputs.working_dir }}"
+    
+    - name: Terraform Format
+      shell: bash
+      working-directory: ${{ inputs.working_dir }}
+      run: |
+        source "${{ github.action_path }}/../scripts/error-handler.sh"
+        
+        log_group "Terraform Format Check"
+        log_notice "Checking Terraform formatting..."
+        
+        if [ "${{ inputs.check_only }}" == "true" ]; then
+          log_notice "Running in check-only mode"
+          terraform fmt -check -diff -recursive || \
+            fail "Terraform format check failed. Run 'terraform fmt -recursive' to fix" 20
+        else
+          terraform fmt -diff -recursive || \
+            fail "Terraform formatting failed" 20
+          log_notice "✓ Terraform code formatted"
+        fi
+        
+        log_group_end
